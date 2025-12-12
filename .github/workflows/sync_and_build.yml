@@ -4,7 +4,7 @@ on:
   schedule:
     # 每天 UTC 00:00 (台灣時間 08:00) 執行
     - cron: '0 0 * * *'
-  workflow_dispatch: # 允許手動按按鈕觸發
+  workflow_dispatch: # 允許手動觸發
 
 permissions:
   contents: write
@@ -14,49 +14,57 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      # 1. 檢出你的程式碼
+      # 1. 檢出程式碼
       - name: Checkout target repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # 抓取完整歷史以便合併
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2. 設定 Git 使用者身份
+      # 2. 設定 Git 身份
       - name: Configure Git
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-      # 3. 同步上游倉庫 (Mabbs/pixiv-index)
+      # 3. 同步上游倉庫
       - name: Sync with Upstream (Mabbs/pixiv-index)
         run: |
-          # 設定上游地址
           git remote add upstream https://github.com/Mabbs/pixiv-index.git
           git fetch upstream
           
-          # 切換到主分支 (假設你的主分支是 master，如果是 main 請修改這裡)
           git checkout master || git checkout main
           
-          # 合併上游的 master 分支
           echo "Merging upstream changes..."
+          # 嘗試合併，若有衝突優先使用上游版本
           git merge upstream/master --allow-unrelated-histories -m "Sync with upstream" || {
-            echo "Merge conflict detected. Accepting upstream changes for JSON files..."
+            echo "Conflict detected. Accepting upstream changes..."
             git checkout upstream/master -- .
             git commit -m "Resolved conflicts by accepting upstream changes"
           }
 
-      # 4. 設定 Python 環境
+      # 【關鍵步驟】4. 刪除不需要的 php.yml
+      # 這樣可以防止你的 Fork 執行原本的 PHP 爬蟲腳本
+      - name: Remove upstream workflows
+        run: |
+          echo "Removing unwanted upstream workflow files..."
+          rm -f .github/workflows/php.yml
+          
+          # 如果還有其他不想同步的檔案，也可以加在這裡，例如:
+          # rm -f loliconapi.php
+
+      # 5. 設定 Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      # 5. 安裝 sqlite-utils (轉換工具)
+      # 6. 安裝 sqlite-utils
       - name: Install dependencies
         run: |
           pip install sqlite-utils
 
-      # 6. 執行轉換腳本 (JSON -> SQLite)
+      # 7. 建立 SQLite 資料庫 (Python 腳本)
       - name: Build SQLite Database
         shell: python
         run: |
@@ -68,31 +76,27 @@ jobs:
 
           db_name = "pixiv_index.db"
           
-          # 如果舊的 DB 存在，先刪除以確保資料最新且乾淨
           if os.path.exists(db_name):
               os.remove(db_name)
           
           db = Database(db_name)
-          
-          print("Scanning for JSON files...")
           count = 0
           
-          # 遞迴搜尋當前目錄下的所有 json 檔案
+          print("Scanning for JSON files...")
+          # 遞迴搜尋所有 json
           for path in Path('.').rglob('*.json'):
-              # 排除 .git, .github 資料夾以及非資料 json
+              # 排除系統目錄與非資料檔案
               if '.git' in str(path) or '.github' in str(path):
                   continue
-              if path.name in ['package.json', 'tsconfig.json']:
+              if path.name in ['package.json', 'tsconfig.json', 'index.json']: 
                   continue
               
               try:
                   with open(path, 'r', encoding='utf-8') as f:
                       content = json.load(f)
                       
-                      # 根據 JSON 結構寫入資料庫
-                      # 假設每個檔案可能是一個 Dict 或 List[Dict]
+                      # 寫入資料庫
                       if isinstance(content, list):
-                          # 如果有 id 欄位，就用它當主鍵 (pk)，避免重複
                           db["illusts"].insert_all(content, alter=True, pk="id", ignore=True)
                       elif isinstance(content, dict):
                           db["illusts"].insert(content, alter=True, pk="id", ignore=True)
@@ -104,27 +108,28 @@ jobs:
               except Exception as e:
                   print(f"Skipping {path}: {e}")
 
-          print(f"Database built successfully! Total files processed: {count}")
+          print(f"Done! Processed {count} files.")
           
-          # 建立全文檢索 (Optional: 方便搜尋標題或標籤)
+          # 建立索引與壓縮
           try:
+              db["illusts"].create_index(["tags"])
               db["illusts"].enable_fts(["title", "tags"], create_triggers=True)
-              print("FTS enabled.")
           except:
               pass
-          
-          # 壓縮資料庫空間
           db.vacuum()
 
-      # 7. 提交並推送生成的 .db 檔案
-      - name: Commit and Push DB
+      # 8. 提交變更 (包含 DB 的更新 和 php.yml 的刪除)
+      - name: Commit and Push
         run: |
+          # 加入 db 檔
           git add pixiv_index.db
           
-          # 檢查是否有變更
+          # 加入刪除 php.yml 的變更 (git add -u 會處理刪除的檔案)
+          git add -u
+          
           if git diff --staged --quiet; then
-            echo "No changes in database."
+            echo "No changes to commit."
           else
-            git commit -m "Auto-build: Update SQLite database from upstream"
+            git commit -m "Auto-build: Sync upstream, remove php.yml, update DB"
             git push origin HEAD
           fi
