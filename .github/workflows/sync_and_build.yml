@@ -30,28 +30,30 @@ jobs:
       # 3. 同步上游倉庫
       - name: Sync with Upstream (Mabbs/pixiv-index)
         run: |
+          # 設定上游
           git remote add upstream https://github.com/Mabbs/pixiv-index.git
           git fetch upstream
           
-          git checkout master || git checkout main
+          # 確保切換到本地的 main 分支
+          git checkout main
           
           echo "Merging upstream changes..."
+          # 【修正處】這裡改成了 upstream/main
           # 嘗試合併，若有衝突優先使用上游版本
-          git merge upstream/master --allow-unrelated-histories -m "Sync with upstream" || {
+          git merge upstream/main --allow-unrelated-histories -m "Sync with upstream" || {
             echo "Conflict detected. Accepting upstream changes..."
-            git checkout upstream/master -- .
+            # 【修正處】這裡也改成了 upstream/main
+            git checkout upstream/main -- .
             git commit -m "Resolved conflicts by accepting upstream changes"
           }
 
-      # 【關鍵步驟】4. 刪除不需要的 php.yml
-      # 這樣可以防止你的 Fork 執行原本的 PHP 爬蟲腳本
+      # 4. 刪除不需要的 php.yml (防止執行上游的爬蟲)
       - name: Remove upstream workflows
         run: |
           echo "Removing unwanted upstream workflow files..."
           rm -f .github/workflows/php.yml
-          
-          # 如果還有其他不想同步的檔案，也可以加在這裡，例如:
-          # rm -f loliconapi.php
+          # 也可以順手刪除原本的 php 腳本，保持倉庫乾淨 (選擇性)
+          rm -f loliconapi.php
 
       # 5. 設定 Python
       - name: Set up Python
@@ -76,6 +78,7 @@ jobs:
 
           db_name = "pixiv_index.db"
           
+          # 刪除舊 DB 重新建立
           if os.path.exists(db_name):
               os.remove(db_name)
           
@@ -113,23 +116,22 @@ jobs:
           # 建立索引與壓縮
           try:
               db["illusts"].create_index(["tags"])
+              # 如果 json 中有 title 欄位，這行會建立全文檢索
               db["illusts"].enable_fts(["title", "tags"], create_triggers=True)
           except:
               pass
           db.vacuum()
 
-      # 8. 提交變更 (包含 DB 的更新 和 php.yml 的刪除)
+      # 8. 提交變更
       - name: Commit and Push
         run: |
-          # 加入 db 檔
           git add pixiv_index.db
-          
-          # 加入刪除 php.yml 的變更 (git add -u 會處理刪除的檔案)
+          # 包含被刪除的 php.yml
           git add -u
           
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "Auto-build: Sync upstream, remove php.yml, update DB"
+            git commit -m "Auto-build: Sync upstream(main), remove php.yml, update DB"
             git push origin HEAD
           fi
