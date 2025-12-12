@@ -1,0 +1,130 @@
+name: Sync Upstream and Build DB
+
+on:
+  schedule:
+    # 每天 UTC 00:00 (台灣時間 08:00) 執行
+    - cron: '0 0 * * *'
+  workflow_dispatch: # 允許手動按按鈕觸發
+
+permissions:
+  contents: write
+
+jobs:
+  sync-and-build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 1. 檢出你的程式碼
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 抓取完整歷史以便合併
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # 2. 設定 Git 使用者身份
+      - name: Configure Git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      # 3. 同步上游倉庫 (Mabbs/pixiv-index)
+      - name: Sync with Upstream (Mabbs/pixiv-index)
+        run: |
+          # 設定上游地址
+          git remote add upstream https://github.com/Mabbs/pixiv-index.git
+          git fetch upstream
+          
+          # 切換到主分支 (假設你的主分支是 master，如果是 main 請修改這裡)
+          git checkout master || git checkout main
+          
+          # 合併上游的 master 分支
+          echo "Merging upstream changes..."
+          git merge upstream/master --allow-unrelated-histories -m "Sync with upstream" || {
+            echo "Merge conflict detected. Accepting upstream changes for JSON files..."
+            git checkout upstream/master -- .
+            git commit -m "Resolved conflicts by accepting upstream changes"
+          }
+
+      # 4. 設定 Python 環境
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      # 5. 安裝 sqlite-utils (轉換工具)
+      - name: Install dependencies
+        run: |
+          pip install sqlite-utils
+
+      # 6. 執行轉換腳本 (JSON -> SQLite)
+      - name: Build SQLite Database
+        shell: python
+        run: |
+          import os
+          import json
+          import sqlite3
+          from pathlib import Path
+          from sqlite_utils import Database
+
+          db_name = "pixiv_index.db"
+          
+          # 如果舊的 DB 存在，先刪除以確保資料最新且乾淨
+          if os.path.exists(db_name):
+              os.remove(db_name)
+          
+          db = Database(db_name)
+          
+          print("Scanning for JSON files...")
+          count = 0
+          
+          # 遞迴搜尋當前目錄下的所有 json 檔案
+          for path in Path('.').rglob('*.json'):
+              # 排除 .git, .github 資料夾以及非資料 json
+              if '.git' in str(path) or '.github' in str(path):
+                  continue
+              if path.name in ['package.json', 'tsconfig.json']:
+                  continue
+              
+              try:
+                  with open(path, 'r', encoding='utf-8') as f:
+                      content = json.load(f)
+                      
+                      # 根據 JSON 結構寫入資料庫
+                      # 假設每個檔案可能是一個 Dict 或 List[Dict]
+                      if isinstance(content, list):
+                          # 如果有 id 欄位，就用它當主鍵 (pk)，避免重複
+                          db["illusts"].insert_all(content, alter=True, pk="id", ignore=True)
+                      elif isinstance(content, dict):
+                          db["illusts"].insert(content, alter=True, pk="id", ignore=True)
+                          
+                  count += 1
+                  if count % 1000 == 0:
+                      print(f"Processed {count} files...")
+                      
+              except Exception as e:
+                  print(f"Skipping {path}: {e}")
+
+          print(f"Database built successfully! Total files processed: {count}")
+          
+          # 建立全文檢索 (Optional: 方便搜尋標題或標籤)
+          try:
+              db["illusts"].enable_fts(["title", "tags"], create_triggers=True)
+              print("FTS enabled.")
+          except:
+              pass
+          
+          # 壓縮資料庫空間
+          db.vacuum()
+
+      # 7. 提交並推送生成的 .db 檔案
+      - name: Commit and Push DB
+        run: |
+          git add pixiv_index.db
+          
+          # 檢查是否有變更
+          if git diff --staged --quiet; then
+            echo "No changes in database."
+          else
+            git commit -m "Auto-build: Update SQLite database from upstream"
+            git push origin HEAD
+          fi
