@@ -4,39 +4,61 @@
 <h1>Setu Viewer</h1>
 <hr />
 <table border="1"><tr><td width="510">
-<img src="/images/loading.svg" width="500" onerror="getimg()"/>
+<!-- 移除 onerror，改用 ID 方便操作 -->
+<img id="main-img" src="/images/loading.svg" width="500" />
 </td><td width="250">
 <p>PID: <span id="pid">Loading...</span></p>
-<p>标题: <span id="title">Loading...</span></p>
+<p>標題: <span id="title">Loading...</span></p>
 <p>作者: <span id="author">Loading...</span></p>
-<p>上传时间: <span id="uploadDate">Loading...</span></p>
+<p>上傳時間: <span id="uploadDate">Loading...</span></p>
 <p>Tags: <span id="tags">Loading...</span></p>
 </td></tr></table>
-<p><button onclick="alert('Loading');">再来一张</button></p>
+<p><button id="next-btn" disabled>正在載入數據...</button></p>
 <hr />
 Made By <a href="https://mayx.eu.org">Mayx</a>
 </center>
+
 <script>
 var indexdata;
+
 function getimg(){
-    $("img").attr("src", "/images/loading.svg");
-    setTimeout(function(){
-        $.get("/pixiv-index/data/" + indexdata[Math.floor(Math.random()*indexdata.length)] ,function(data){
-            $("#pid").html("<a href=\"https://www.pixiv.net/artworks/" + data["pid"] + "\">" + data["pid"] + "</a>");
-            $("#title").html(data["title"]);
-            $("#author").html("<a href=\"https://www.pixiv.net/users/" + data["uid"] + "\">" + data["author"] + "</a>");
-            $("#tags").html(data["tags"].join(", "));
-            $("img").attr("src", "https://pixiv.mayx.eu.org" + data["url"]);
-            $("#uploadDate").html(new Date(data["uploadDate"]).toLocaleString());
-        });
-    }, 500);
-}
-function getindex(){
-    $.get("/pixiv-index/index.json",function(data){
-        indexdata = data;
-        $("button")[0].onclick=getimg;
-        getimg();
+    if (!indexdata || indexdata.length === 0) return;
+
+    // 顯示讀取中狀態
+    $("#pid, #title, #author, #tags, #uploadDate").text("Loading...");
+    
+    // 隨取選取一個索引
+    var targetPath = indexdata[Math.floor(Math.random() * indexdata.length)];
+    
+    $.get("/pixiv-index/data/" + targetPath, function(data){
+        $("#pid").html("<a href=\"https://www.pixiv.net/artworks/" + data["pid"] + "\" target=\"_blank\">" + data["pid"] + "</a>");
+        $("#title").html(data["title"]);
+        $("#author").html("<a href=\"https://www.pixiv.net/users/" + data["uid"] + "\" target=\"_blank\">" + data["author"] + "</a>");
+        $("#tags").html(data["tags"].join(", "));
+        $("#uploadDate").html(new Date(data["uploadDate"]).toLocaleString());
+        
+        // 最後再替換圖片位址
+        $("#main-img").attr("src", "https://pixiv.mayx.eu.org" + data["url"]);
+    }).fail(function() {
+        alert("獲取詳細資料失敗，請重試");
     });
 }
-getindex();
+
+function getindex(){
+    $.get("/pixiv-index/index.json", function(data){
+        indexdata = data;
+        // 數據載入完成後，啟用按鈕並綁定事件
+        $("#next-btn").text("再來一張").prop("disabled", false).click(getimg);
+        // 執行第一次載入
+        getimg();
+    }).fail(function() {
+        $("#next-btn").text("索引載入失敗");
+        alert("無法讀取 index.json");
+    });
+}
+
+// 頁面載入後開始初始化
+$(document).ready(function(){
+    getindex();
+});
 </script>
